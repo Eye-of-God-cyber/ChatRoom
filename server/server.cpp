@@ -1,111 +1,152 @@
-//
-// Filename:    server.cpp 
-// Description: This file contains the chat room server which clients can connect to through TCP
-// Author:      Aaron Kelsey
-//
+// Filename: server.cpp
+// Description: Multi-user chatroom server with broadcasting and cross-platform compatibility
+// Author: Updated by Priyansh
 
 #include <iostream>
 #include <string>
-#include <WinSock2.h>
+#include <vector>
+#include <thread>
+#include <mutex>
+#include <algorithm>
+#include <atomic>
 
-#include "socket.h"
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #pragma comment(lib, "ws2_32.lib")
+#else
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    #include <arpa/inet.h>
+    #include <unistd.h>
+    #include <cstring>
+    #define SOCKET int
+    #define INVALID_SOCKET -1
+    #define SOCKET_ERROR -1
+    #define closesocket close
+#endif
 
-#define no_init_all
+// Global container for all connected clients
+std::vector<SOCKET> clients;
+std::mutex clientsMutex;
+std::atomic<bool> serverRunning(true);
 
-int main(int argc, char* argv[])
-{
+// Function to broadcast a message to all clients except the sender
+void broadcastMessage(const std::string &message, SOCKET excludeSocket) {
+    std::lock_guard<std::mutex> lock(clientsMutex);
+    for (auto client : clients) {
+        if (client != excludeSocket) {
+            send(client, message.c_str(), static_cast<int>(message.length()), 0);
+        }
+    }
+}
 
-  if (argc != 2)
-  {
-    std::cerr << "Port not given" << std::endl;
-    exit(0);
-  }
+// Thread function to handle an individual client
+void handleClient(SOCKET clientSocket) {
+    char buffer[1024];
 
-  int iPort = std::stoi(argv[1]);
+    while (serverRunning) {
+        memset(buffer, 0, sizeof(buffer));
+        int bytes = recv(clientSocket, buffer, sizeof(buffer), 0);
+        if (bytes <= 0) {
+            std::cout << "A client disconnected.\n";
+            // Remove the client from the global list
+            {
+                std::lock_guard<std::mutex> lock(clientsMutex);
+                clients.erase(std::remove(clients.begin(), clients.end(), clientSocket), clients.end());
+            }
+            closesocket(clientSocket);
+            break;
+        }
 
-  Socket oListeningSocket;
+        // Create message string from received data
+        std::string message(buffer, bytes);
+        std::cout << message << std::endl; // Optionally print on the server console
 
-  if (oListeningSocket.bind(iPort) == SOCKET_ERROR)
-  {
-    std::cerr << "Binding failed" << std::endl;
+        // Broadcast the received message to all other connected clients
+        broadcastMessage(message, clientSocket);
+    }
+}
 
-  }
+int main(int argc, char* argv[]) {
+    if (argc != 2) {
+        std::cerr << "Usage: server <Port>\n";
+        return 1;
+    }
+    int port = std::stoi(argv[1]);
 
-  if (oListeningSocket.listen(10) == SOCKET_ERROR)
-  {
-    std::cerr << "Error enabling socket for listening" << std::endl;
-  }
+#ifdef _WIN32
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        std::cerr << "WSAStartup failed with error: " << WSAGetLastError() << "\n";
+        return 1;
+    }
+#endif
 
-  std::shared_ptr<Socket> oClientSocket = oListeningSocket.accept();
-
-  if (oClientSocket->getSocket() == INVALID_SOCKET)
-  {
-    std::cerr << "Error accepting connection" << std::endl;
-  }
-
-  int bytesReceived = 0;
-  int bytesSent = 0;
-
-  // Send and receive from the client
-  while (true)
-  {
-    std::cout << "Awaiting client response..." << std::endl;
-
-    if (oClientSocket == nullptr)
-    {
-      std::cerr << "client socket null!" << std::endl;
+    // Create the listening socket
+    SOCKET listeningSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (listeningSocket == INVALID_SOCKET) {
+        std::cerr << "Failed to create listening socket.\n";
+        return 1;
     }
 
-    std::string sBuffer = "";
-    bytesReceived += oClientSocket->receive(sBuffer);
+    // Setup the server address structure
+    sockaddr_in serverAddr{};
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bytesReceived == SOCKET_ERROR)
-    {
-      std::cerr << "No bytes received by the server" << WSAGetLastError() << std::endl;
-    }
-    else
-    {
-      if (sBuffer == "exit")
-      {
-        std::cout << "Client has disconnected from the session" << std::endl;
-        break;
-      }
-
-      std::cout << "Client: " << sBuffer << std::endl;
-    }
-    
-    std::cout << ">:";
-
-    std::string sInput;
-    std::getline(std::cin, sInput);
-
-    if (sInput == "exit")
-    {
-      bytesSent += oClientSocket->send(sInput);
-
-      if (bytesSent == SOCKET_ERROR)
-      {
-        std::cerr << "Send failed" << WSAGetLastError() << std::endl;
-      }
-
-      break;
+    // Bind the socket
+    if (bind(listeningSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == SOCKET_ERROR) {
+        std::cerr << "Bind failed.\n";
+        closesocket(listeningSocket);
+        return 1;
     }
 
-    bytesSent += oClientSocket->send(sInput);
-
-    if (bytesSent == SOCKET_ERROR)
-    {
-      std::cerr << "Send failed" << WSAGetLastError() << std::endl;
+    // Put the socket in listening mode
+    if (listen(listeningSocket, 10) == SOCKET_ERROR) {
+        std::cerr << "Listen failed.\n";
+        closesocket(listeningSocket);
+        return 1;
     }
-  }
 
-  std::cout << "Bytes sent: " << bytesSent << std::endl;
-  std::cout << "Bytes received: " << bytesReceived << std::endl;
+    std::cout << "Server running on port " << port << ". Waiting for connections...\n";
 
-  // Close socket and clean up
-  oListeningSocket.close();
-  oClientSocket->close();
+    // Vector to keep track of client threads
+    std::vector<std::thread> clientThreads;
 
-  std::cout << "Connection closed." << std::endl;
-  return 0;
+    while (serverRunning) {
+        sockaddr_in clientAddr{};
+        socklen_t clientSize = sizeof(clientAddr);
+        SOCKET clientSocket = accept(listeningSocket, reinterpret_cast<sockaddr*>(&clientAddr), &clientSize);
+        if (clientSocket == INVALID_SOCKET) {
+            std::cerr << "Accept error.\n";
+            continue;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(clientsMutex);
+            clients.push_back(clientSocket);
+        }
+
+        std::cout << "New client connected from " << inet_ntoa(clientAddr.sin_addr) << "\n";
+
+        // Launch a new thread for the connected client
+        clientThreads.emplace_back(std::thread(handleClient, clientSocket));
+    }
+
+    // Clean up: join all client handling threads.
+    for (auto &t : clientThreads) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+
+    closesocket(listeningSocket);
+
+#ifdef _WIN32
+    WSACleanup();
+#endif
+
+    return 0;
 }
