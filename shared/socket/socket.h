@@ -1,104 +1,66 @@
-//
-// Filename:    socket.h 
-// Description: This file wraps the WinSock2 library 
-// Author:      Aaron Kelsey
-//
+// Filename: socket.h
+// Description: This file wraps the socket API
+// Author: Aaron Kelsey (Updated for cross-platform support)
 
 #ifndef SOCKET_H
 #define SOCKET_H
 
 #include <string>
 #include <memory>
-#include <WinSock2.h>
 
-#ifdef SIMPLESOCKET_EXPORT
-  #define SIMPLESOCKET_API __declspec(dllexport)
+#ifdef _WIN32
+  #include <WinSock2.h>
+  #include <Ws2tcpip.h>
+  #define SIMPLESOCKET_API __declspec(dllimport)  // or __declspec(dllexport) during build
 #else
-  #define SIMPLESOCKET_API __declspec(dllimport)
+  // POSIX / macOS
+  #include <sys/socket.h>
+  #include <netinet/in.h>
+  #include <arpa/inet.h>
+  #include <unistd.h>
+  #include <cstring>
+  #define SOCKET int
+  #define INVALID_SOCKET -1
+  #define SOCKET_ERROR -1
+  #define closesocket close
+  #define SIMPLESOCKET_API
 #endif
 
-class SIMPLESOCKET_API Socket
-{
+class SIMPLESOCKET_API Socket {
 public:
-  /**
-    * Initialises WinSock with WSAStartup and creates a socket
-    */
-  Socket();
+    // Default constructor initializes the socket (and on Windows, calls WSAStartup)
+    Socket();
 
-  /**
-    * Closes socket and cleans up WinSock with WSACleanup
-    */
-  ~Socket();
+    // Destructor: closes the socket and, on Windows, calls WSACleanup if owned.
+    ~Socket();
 
-  /**
-    * Connects socket to target
-    * @param Port to connect to
-    * @param IP Address to connect to
-    * @return 0 if successul or -1 if failed
-    */
-  int connect(const int iPort, const std::string& sAddress);
-
-  /**
-    * Bind the socket to local address
-    * @param Assigned port to the socket
-    * @return 0 if successul or -1 if failed
-    */
-  int bind(const int iPort);
-
-  /**
-    * Allows socket to listen for connections
-    * @param Maximum number of pending connections in queue
-    * @return 0 if successul or -1 if failed
-    */
-  int listen(const int iBacklog);
-
-  /**
-    * Connect permits an incoming connection request to the socket
-    * @return Socket object with newly created SOCKET if successful
-    */
-  std::shared_ptr<Socket> accept();
-
-  /**
-    * Connects socket to target
-    * @param Message to be sent
-    * @return Number of bytes sent if successul or -1 if failed
-    */
-  int send(const std::string& sMessage);
-
-  /**
-    * Receives data from connected socket
-    * @param Buffer to receive incoming message
-    * @return Number of bytes received if successul or -1 if failed
-    */
-  int receive(std::string& sMessage);
-
-  /**
-    * Getter function to return socker descriptor file
-    * @return SOCKET object
-    */
-  SOCKET getSocket() { return oSocket; }
-
-  /**
-    * Closes the socket connection
-    * @return void
-    */
-  void close();
+    int connect(const int iPort, const std::string& sAddress);
+    int bind(const int iPort);
+    int listen(const int iBacklog);
+    std::shared_ptr<Socket> accept();
+    int send(const std::string& sMessage);
+    int receive(std::string& sMessage);
+    SOCKET getSocket() { return oSocket; }
+    void close();
 
 private:
-  /**
-    * Setter function to set socker descriptor file
-    * @return void
-    */
-  void setSocket(SOCKET socket) { oSocket = socket; }
+    void setSocket(SOCKET socket) { oSocket = socket; }
+    // Private constructor used for accepted sockets. No socket reinitialization.
+    Socket(SOCKET sock);
 
-  WSADATA     oWsaData;
-  SOCKADDR_IN oServerInfo;
-  SOCKET      oSocket;
+#ifdef _WIN32
+    WSADATA     oWsaData;
+#endif
+    sockaddr_in oServerInfo;
+    SOCKET      oSocket;
 
-  bool bConnected;
-  bool bClosed;
+    bool bConnected;
+    bool bClosed;
+#ifdef _WIN32
+    bool ownsWSA;  // True if this instance called WSAStartup.
+#endif
 
-  static const int iBufferSize = 4000;
+    static const int iBufferSize = 4000;
 };
 
 #endif // SOCKET_H
